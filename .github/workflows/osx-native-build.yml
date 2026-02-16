@@ -21,7 +21,7 @@ jobs:
         distribution: 'temurin'
         cache: maven
     - name: Setup GraalVM
-      uses: ayltai/setup-graalvm@v1
+      uses: ayltai/setup-graalvm@v4
       with:
         java-version: 17
         graalvm-version: 22.3.0
