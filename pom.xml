@@ -222,7 +222,7 @@
 				<version>3.16.0</version>
 				<configuration>
 					<includeTests>true</includeTests>
-					<targetJdk>17</targetJdk>
+					<targetJdk>25</targetJdk>
 					<rulesets>
 						<ruleset>${project.basedir}/pmd.xml</ruleset>
 					</rulesets>
