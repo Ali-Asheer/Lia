@@ -73,7 +73,7 @@ public class P2PServer extends AbstractServer {
 	private EncryptedTokenHandler encryptedTokenHandler;
 
 	@PostConstruct @SneakyThrows
-	private void init() {
+	protected void init() {
 		InternalLoggerFactory.setDefaultFactory(Slf4JLoggerFactory.INSTANCE);
 
 		final SelfSignedCertificate certificate = new SelfSignedCertificate();
