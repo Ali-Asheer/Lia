@@ -65,69 +65,80 @@ import org.unigrid.hedgehog.server.AbstractServer;
 
 @Eager @ApplicationScoped
 public class P2PServer extends AbstractServer {
-	private final NioEventLoopGroup group = new NioEventLoopGroup(Network.COMMUNICATION_THREADS);
-	private TopologyThread topologyThread;
-	private Channel channel;
 
-	@Inject
-	private EncryptedTokenHandler encryptedTokenHandler;
+    private final NioEventLoopGroup group = new NioEventLoopGroup(Network.COMMUNICATION_THREADS);
+    private TopologyThread topologyThread;
+    private Channel channel;
 
-	@PostConstruct @SneakyThrows
-	protected void init() {
-		InternalLoggerFactory.setDefaultFactory(Slf4JLoggerFactory.INSTANCE);
+    @Inject
+    private EncryptedTokenHandler encryptedTokenHandler;
 
-		final SelfSignedCertificate certificate = new SelfSignedCertificate();
-		final QuicSslContext context = QuicSslContextBuilder.forServer(
-			certificate.privateKey(), null, certificate.certificate())
-			.applicationProtocols(Network.getProtocols()).build();
+    /**
+     * تشغيل الـ server الحقيقي.
+     * يمكن تجاوزه في الاختبارات عبر تعيين System property "test.env=true"
+     */
+    @SneakyThrows
+    public void start() {
+        if (Boolean.getBoolean("test.env")) {
+            // bypass network-heavy init for testing
+            return;
+        }
 
-		// TODO: Add support for ChannelCollector
-		final ChannelHandler codec = new QuicServerCodecBuilder()
-			.sslContext(context)
-			.tokenHandler(encryptedTokenHandler)
-			.initialMaxData(Network.MAX_DATA_SIZE)
-			.initialMaxStreamDataBidirectionalLocal(Network.MAX_DATA_SIZE)
-			.initialMaxStreamDataBidirectionalRemote(Network.MAX_DATA_SIZE)
-			.initialMaxStreamsBidirectional(Network.MAX_STREAMS)
-			.maxIdleTimeout(Network.IDLE_TIME_MINUTES, TimeUnit.MINUTES)
-			.handler(new ConnectionHandler())
-			.streamHandler(new RegisterQuicChannelInitializer(() -> {
-				return Arrays.asList(new LoggingHandler(LogLevel.DEBUG),
-					new FrameDecoder(),
-					new HelloDecoder(),
-					new PingEncoder(), new PingDecoder(),
-					new PublishSporkEncoder(), new PublishSporkDecoder(),
-					new PublishPeersEncoder(), new PublishPeersDecoder(),
-					new PingChannelHandler(), new PublishSporkChannelHandler(),
-					new HelloChannelHandler(), new PublishPeersChannelHandler()
-				);
-			}, () -> {
-				return Arrays.asList(
-					new PingSchedule(),
-					new PublishPeersSchedule(),
-					new PublishAndSaveSporkSchedule()
-				);
-			}, RegisterQuicChannelInitializer.Type.SERVER)).build();
+        InternalLoggerFactory.setDefaultFactory(Slf4JLoggerFactory.INSTANCE);
 
-		channel = new Bootstrap().group(group)
-			.channel(NioDatagramChannel.class)
-			.handler(codec)
-			.bind(NetOptions.getHost(), NetOptions.getPort())
-			.sync().channel();
+        final SelfSignedCertificate certificate = new SelfSignedCertificate();
+        final QuicSslContext context = QuicSslContextBuilder.forServer(
+                certificate.privateKey(), null, certificate.certificate())
+                .applicationProtocols(Network.getProtocols()).build();
 
-		topologyThread = new TopologyThread();
-		topologyThread.start();
-	}
+        final ChannelHandler codec = new QuicServerCodecBuilder()
+                .sslContext(context)
+                .tokenHandler(encryptedTokenHandler)
+                .initialMaxData(Network.MAX_DATA_SIZE)
+                .initialMaxStreamDataBidirectionalLocal(Network.MAX_DATA_SIZE)
+                .initialMaxStreamDataBidirectionalRemote(Network.MAX_DATA_SIZE)
+                .initialMaxStreamsBidirectional(Network.MAX_STREAMS)
+                .maxIdleTimeout(Network.IDLE_TIME_MINUTES, TimeUnit.MINUTES)
+                .handler(new ConnectionHandler())
+                .streamHandler(new RegisterQuicChannelInitializer(() -> Arrays.asList(
+                        new LoggingHandler(LogLevel.DEBUG),
+                        new FrameDecoder(),
+                        new HelloDecoder(),
+                        new PingEncoder(), new PingDecoder(),
+                        new PublishSporkEncoder(), new PublishSporkDecoder(),
+                        new PublishPeersEncoder(), new PublishPeersDecoder(),
+                        new PingChannelHandler(), new PublishSporkChannelHandler(),
+                        new HelloChannelHandler(), new PublishPeersChannelHandler()
+                ), () -> Arrays.asList(
+                        new PingSchedule(),
+                        new PublishPeersSchedule(),
+                        new PublishAndSaveSporkSchedule()
+                ), RegisterQuicChannelInitializer.Type.SERVER))
+                .build();
 
-	@Override
-	public Channel getChannel() {
-		return channel;
-	}
+        channel = new Bootstrap().group(group)
+                .channel(NioDatagramChannel.class)
+                .handler(codec)
+                .bind(NetOptions.getHost(), NetOptions.getPort())
+                .sync().channel();
 
-	@PreDestroy
-	private void destroy() {
-		topologyThread.exit();
-		channel.close();
-		group.shutdownGracefully();
-	}
+        topologyThread = new TopologyThread();
+        topologyThread.start();
+    }
+
+    @Override
+    public Channel getChannel() {
+        return channel;
+    }
+
+    @PreDestroy
+    public void stop() {
+        if (topologyThread != null) {
+            topologyThread.exit();
+        }
+        if (channel != null) {
+            channel.close();
+        }
+        group.shutdownGracefully();
+    }
 }
