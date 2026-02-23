@@ -34,25 +34,13 @@ import org.unigrid.hedgehog.jqwik.BaseMockedWeldTest;
 import org.unigrid.hedgehog.jqwik.Instances;
 import org.unigrid.hedgehog.jqwik.WeldSetup;
 
-@WeldSetup(TestServer.class)
+@WeldSetup(@WeldInitiator(
+    @AddBeanClasses(TestServer.class),
+    @Mock(instance = NetOptions.class),  // Mock before bean creation
+    @Mock(instance = RestOptions.class)
+))
 public class BaseServerTest extends BaseMockedWeldTest {
-	private static final int NUM_SERVERS = 20;
-
-	@Mocked
-	protected NetOptions netOptions;
-
-	@Mocked
-	protected RestOptions restOptions;
-
-	@Inject @Instances(NUM_SERVERS)
-	private List<TestServer> servers;
-
-	@Provide
-	public Arbitrary<List<TestServer>> provideTestServers(@ForAll @IntRange(min = 0, max = NUM_SERVERS - 1) int from,
-		@ForAll @IntRange(min = 1, max = NUM_SERVERS) int num) {
-
-		return Arbitraries.shuffle(servers.subList(from, Math.min(from + num, NUM_SERVERS - 1)));
-	}
+	
 
 	@BeforeTry
 	public void before() {
