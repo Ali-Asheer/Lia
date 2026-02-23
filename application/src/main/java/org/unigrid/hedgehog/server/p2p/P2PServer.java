@@ -17,102 +17,89 @@
     If not, see <http://www.gnu.org/licenses/> and <https://github.com/unigrid-project/hedgehog>.
  */
 
-package org.unigrid.hedgehog.client;
+package org.unigrid.hedgehog.server.p2p;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
-import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
-import io.netty.incubator.codec.quic.QuicChannel;
-import io.netty.incubator.codec.quic.QuicClientCodecBuilder;
+import io.netty.handler.ssl.util.SelfSignedCertificate;
+import io.netty.incubator.codec.quic.QuicServerCodecBuilder;
 import io.netty.incubator.codec.quic.QuicSslContext;
 import io.netty.incubator.codec.quic.QuicSslContextBuilder;
-import io.netty.incubator.codec.quic.QuicStreamType;
-import java.net.InetSocketAddress;
-import java.security.cert.CertificateException;
-import java.util.concurrent.ExecutionException;
-import org.unigrid.hedgehog.model.network.handler.PingChannelHandler;
-import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 import io.netty.util.internal.logging.Slf4JLoggerFactory;
-import java.security.NoSuchAlgorithmException;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.util.Arrays;
-import java.util.Optional;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import lombok.SneakyThrows;
+import org.unigrid.hedgehog.command.option.NetOptions;
 import org.unigrid.hedgehog.model.Network;
-import org.unigrid.hedgehog.model.network.ConnectionContainer;
+import org.unigrid.hedgehog.model.cdi.Eager;
+import org.unigrid.hedgehog.model.network.TopologyThread;
 import org.unigrid.hedgehog.model.network.codec.FrameDecoder;
-import org.unigrid.hedgehog.model.network.codec.HelloEncoder;
+import org.unigrid.hedgehog.model.network.codec.HelloDecoder;
 import org.unigrid.hedgehog.model.network.codec.PingDecoder;
 import org.unigrid.hedgehog.model.network.codec.PingEncoder;
 import org.unigrid.hedgehog.model.network.codec.PublishPeersDecoder;
 import org.unigrid.hedgehog.model.network.codec.PublishPeersEncoder;
 import org.unigrid.hedgehog.model.network.codec.PublishSporkDecoder;
 import org.unigrid.hedgehog.model.network.codec.PublishSporkEncoder;
+import org.unigrid.hedgehog.model.network.handler.ConnectionHandler;
+import org.unigrid.hedgehog.model.network.handler.EncryptedTokenHandler;
+import org.unigrid.hedgehog.model.network.handler.HelloChannelHandler;
+import org.unigrid.hedgehog.model.network.handler.PingChannelHandler;
 import org.unigrid.hedgehog.model.network.handler.PublishPeersChannelHandler;
 import org.unigrid.hedgehog.model.network.handler.PublishSporkChannelHandler;
 import org.unigrid.hedgehog.model.network.initializer.RegisterQuicChannelInitializer;
 import org.unigrid.hedgehog.model.network.schedule.PingSchedule;
 import org.unigrid.hedgehog.model.network.schedule.PublishAndSaveSporkSchedule;
 import org.unigrid.hedgehog.model.network.schedule.PublishPeersSchedule;
+import org.unigrid.hedgehog.server.AbstractServer;
 
-public class P2PClient extends ConnectionContainer {
-	public P2PClient(String hostname, int port) throws ExecutionException, InterruptedException, CertificateException,
-		NoSuchAlgorithmException, TimeoutException {
+@Eager @ApplicationScoped
+public class P2PServer extends AbstractServer {
+	private final NioEventLoopGroup group = new NioEventLoopGroup(Network.COMMUNICATION_THREADS);
+	private TopologyThread topologyThread;
+	private Channel channel;
 
-		super();
+	@Inject
+	private EncryptedTokenHandler encryptedTokenHandler;
+
+	@PostConstruct @SneakyThrows
+	private void init() {
 		InternalLoggerFactory.setDefaultFactory(Slf4JLoggerFactory.INSTANCE);
-		group = Optional.of(new NioEventLoopGroup(Network.COMMUNICATION_THREADS));
 
-		final QuicSslContext context = QuicSslContextBuilder.forClient()
-			.trustManager(InsecureTrustManagerFactory.INSTANCE)
-			.applicationProtocols(Network.getProtocols())
-			.build();
+		final SelfSignedCertificate certificate = new SelfSignedCertificate();
+		final QuicSslContext context = QuicSslContextBuilder.forServer(
+			certificate.privateKey(), null, certificate.certificate())
+			.applicationProtocols(Network.getProtocols()).build();
 
-		final ChannelHandler codec = new QuicClientCodecBuilder()
+		// TODO: Add support for ChannelCollector
+		final ChannelHandler codec = new QuicServerCodecBuilder()
+			.sslContext(context)
+			.tokenHandler(encryptedTokenHandler)
 			.initialMaxData(Network.MAX_DATA_SIZE)
 			.initialMaxStreamDataBidirectionalLocal(Network.MAX_DATA_SIZE)
 			.initialMaxStreamDataBidirectionalRemote(Network.MAX_DATA_SIZE)
 			.initialMaxStreamsBidirectional(Network.MAX_STREAMS)
 			.maxIdleTimeout(Network.IDLE_TIME_MINUTES, TimeUnit.MINUTES)
-			.sslContext(context)
-			.build();
-
-		final Channel channelBootstrap = new Bootstrap().group(group.get())
-			.channel(NioDatagramChannel.class)
-			.handler(codec)
-			.bind(0).sync().channel();
-
-		QuicChannel quicChannel;
-
-		try {
-			quicChannel = QuicChannel.newBootstrap(channelBootstrap)
-				.streamHandler(new ChannelInboundHandlerAdapter())
-				.remoteAddress(new InetSocketAddress(hostname, port))
-				.connect().get(Network.CONNECTION_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-
-		} catch (ExecutionException | TimeoutException ex)  {
-			group.get().shutdownGracefully();
-			throw ex;
-		}
-
-		// We create new stream so we can support bidirectional communication (in case we expect a response)
-		// TODO: Add support for ChannelCollector
-		channel = quicChannel.createStream(QuicStreamType.BIDIRECTIONAL,
-			new RegisterQuicChannelInitializer(() -> {
+			.handler(new ConnectionHandler())
+			.streamHandler(new RegisterQuicChannelInitializer(() -> {
 				return Arrays.asList(new LoggingHandler(LogLevel.DEBUG),
 					new FrameDecoder(),
-					new HelloEncoder(),
+					new HelloDecoder(),
 					new PingEncoder(), new PingDecoder(),
 					new PublishSporkEncoder(), new PublishSporkDecoder(),
 					new PublishPeersEncoder(), new PublishPeersDecoder(),
 					new PingChannelHandler(), new PublishSporkChannelHandler(),
-					new PublishPeersChannelHandler()
+					new HelloChannelHandler(), new PublishPeersChannelHandler()
 				);
 			}, () -> {
 				return Arrays.asList(
@@ -120,7 +107,27 @@ public class P2PClient extends ConnectionContainer {
 					new PublishPeersSchedule(),
 					new PublishAndSaveSporkSchedule()
 				);
-			}, RegisterQuicChannelInitializer.Type.CLIENT)
-		).sync().getNow();
+			}, RegisterQuicChannelInitializer.Type.SERVER)).build();
+
+		channel = new Bootstrap().group(group)
+			.channel(NioDatagramChannel.class)
+			.handler(codec)
+			.bind(NetOptions.getHost(), NetOptions.getPort())
+			.sync().channel();
+
+		topologyThread = new TopologyThread();
+		topologyThread.start();
+	}
+
+	@Override
+	public Channel getChannel() {
+		return channel;
+	}
+
+	@PreDestroy
+	private void destroy() {
+		topologyThread.exit();
+		channel.close();
+		group.shutdownGracefully();
 	}
 }
